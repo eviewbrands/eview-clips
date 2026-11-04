@@ -8,8 +8,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "@eview-clips/core": "*",
     "fastify": "^5.0.0",
+    "googleapis": "^144.0.0",
+    "youtube-dl-exec": "^3.0.26",
     "zod": "^3.23.8"
   },
   "devDependencies": {
