@@ -154,15 +154,26 @@ app.get('/api/youtube/import-jobs', async () => ({
   data: Array.from(importJobs.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
 }));
 
+const buildVideoFilter = (kind: 'episodes' | 'shorts') => {
+  if (kind === 'episodes') {
+    return null;
+  }
+
+  return 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1';
+};
+
 const renderClipToFile = async (
   sourcePath: string,
   outputPath: string,
   startSeconds: number,
   durationSeconds: number,
+  kind: 'episodes' | 'shorts' = 'episodes',
 ) => {
   const { spawn } = await import('node:child_process');
+  const videoFilter = buildVideoFilter(kind);
+
   return new Promise<void>((resolve, reject) => {
-    const child = spawn('ffmpeg', [
+    const args = [
       '-hide_banner',
       '-y',
       '-ss',
@@ -171,6 +182,7 @@ const renderClipToFile = async (
       sourcePath,
       '-t',
       String(durationSeconds),
+      ...(videoFilter ? ['-vf', videoFilter] : []),
       '-c:v',
       'libx264',
       '-preset',
@@ -182,7 +194,9 @@ const renderClipToFile = async (
       '-b:a',
       '160k',
       outputPath,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ];
+
+    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let stderr = '';
     child.stderr.on('data', (chunk) => {
@@ -251,7 +265,7 @@ app.post('/api/recordings/:recordingId/render-clip', async (request, reply) => {
 
   try {
     await import('node:fs/promises').then(({ mkdir }) => mkdir(renderDir, { recursive: true }));
-    await renderClipToFile(sourcePath, outputPath, startSeconds, durationSeconds);
+    await renderClipToFile(sourcePath, outputPath, startSeconds, durationSeconds, kind);
     return {
       ok: true,
       message: 'Corte renderizado em modo manual.',

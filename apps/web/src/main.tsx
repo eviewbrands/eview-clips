@@ -91,6 +91,8 @@ const translations = {
     renderClip: 'Renderizar corte',
     close: 'Fechar',
     suggestedCut: 'Corte sugerido',
+    currentTime: 'Tempo atual',
+    totalTime: 'Tempo total',
     renderThisCut: 'Renderizar este corte',
     previous: 'Anterior',
     next: 'Próximo',
@@ -140,6 +142,8 @@ const translations = {
     renderClip: 'Render clip',
     close: 'Close',
     suggestedCut: 'Suggested cut',
+    currentTime: 'Current time',
+    totalTime: 'Total time',
     renderThisCut: 'Render this cut',
     previous: 'Previous',
     next: 'Next',
@@ -241,6 +245,8 @@ function App() {
   const [sourceSeekSeconds, setSourceSeekSeconds] = useState<number | null>(null);
   const [previewClip, setPreviewClip] = useState<{ kind: 'episodes' | 'shorts'; id: string; start: number; duration: number } | null>(null);
   const [previewProgress, setPreviewProgress] = useState(0);
+  const [previewHoverTime, setPreviewHoverTime] = useState<number | null>(null);
+  const [previewIsPlaying, setPreviewIsPlaying] = useState(false);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const t = translations[language];
 
@@ -340,16 +346,65 @@ function App() {
   const openClipPreview = (kind: 'episodes' | 'shorts', clip: { id: string; start: number; duration: number }) => {
     setPreviewClip({ kind, ...clip });
     setPreviewProgress(0);
+    setPreviewIsPlaying(false);
     setFeedback(`Pré-visualização do corte ${clip.id} aberta no player do vídeo baixado.`);
   };
 
   const closeClipPreview = () => {
     setPreviewClip(null);
     setPreviewProgress(0);
+    setPreviewIsPlaying(false);
     if (previewVideoRef.current) {
       previewVideoRef.current.pause();
       previewVideoRef.current.currentTime = 0;
     }
+  };
+
+  const getPreviewTimeAtRatio = (ratio: number) => {
+    if (!previewClip) {
+      return previewClip?.start ?? 0;
+    }
+    const safeRatio = Math.min(1, Math.max(0, ratio));
+    return previewClip.start + safeRatio * previewClip.duration;
+  };
+
+  const seekPreviewToRatio = (ratio: number) => {
+    if (!previewClip || !previewVideoRef.current) {
+      return;
+    }
+    const targetTime = getPreviewTimeAtRatio(ratio);
+    previewVideoRef.current.currentTime = targetTime;
+    setPreviewHoverTime(null);
+    setPreviewProgress(((targetTime - previewClip.start) / previewClip.duration) * 100);
+  };
+
+  const jumpPreviewBy = (seconds: number) => {
+    if (!previewClip || !previewVideoRef.current) {
+      return;
+    }
+    const video = previewVideoRef.current;
+    const rangeMin = previewClip.start;
+    const rangeMax = previewClip.start + previewClip.duration;
+    const nextTime = Math.min(rangeMax, Math.max(rangeMin, video.currentTime + seconds));
+    video.currentTime = nextTime;
+    setPreviewProgress(((nextTime - previewClip.start) / previewClip.duration) * 100);
+  };
+
+  const togglePreviewPlayback = async () => {
+    if (!previewClip || !previewVideoRef.current) {
+      return;
+    }
+    const video = previewVideoRef.current;
+    if (video.paused) {
+      if (video.currentTime >= previewClip.start + previewClip.duration) {
+        video.currentTime = previewClip.start;
+      }
+      await video.play();
+      setPreviewIsPlaying(true);
+      return;
+    }
+    video.pause();
+    setPreviewIsPlaying(false);
   };
 
   const renderManualClip = async (recordingId: string, kind: 'episodes' | 'shorts', clip: { id: string; start: number; duration: number }) => {
@@ -387,24 +442,38 @@ function App() {
     const handleMetadata = () => {
       video.currentTime = previewClip.start;
       setPreviewProgress(0);
-      video.play().catch(() => undefined);
+      setPreviewHoverTime(null);
+      setPreviewIsPlaying(false);
+      video.pause();
     };
 
     const handleTimeUpdate = () => {
       const progress = Math.min(100, Math.max(0, ((video.currentTime - previewClip.start) / previewClip.duration) * 100));
       setPreviewProgress(progress);
+      setPreviewIsPlaying(!video.paused);
       if (video.currentTime >= previewClip.start + previewClip.duration) {
         video.pause();
         video.currentTime = previewClip.start;
         setPreviewProgress(0);
+        setPreviewHoverTime(null);
+        setPreviewIsPlaying(false);
       }
+    };
+
+    const handleEnded = () => {
+      video.currentTime = previewClip.start;
+      setPreviewProgress(0);
+      setPreviewHoverTime(null);
+      setPreviewIsPlaying(false);
     };
 
     video.addEventListener('loadedmetadata', handleMetadata);
     video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('ended', handleEnded);
     return () => {
       video.removeEventListener('loadedmetadata', handleMetadata);
       video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('ended', handleEnded);
     };
   }, [previewClip, currentRecording]);
 
@@ -784,20 +853,92 @@ function App() {
               </div>
               <div className="clip-preview-progress-shell">
                 <div className="clip-preview-progress-meta">
-                  <span>{t.suggestedCut}</span>
-                  <strong>{Math.round(previewProgress)}%</strong>
+                  <span>{t.currentTime}</span>
+                  <strong>
+                    {fmtSeconds(Math.max(0, previewVideoRef.current ? Math.min(previewClip.duration, previewVideoRef.current.currentTime - previewClip.start) : 0))}
+                    {' / '}
+                    {fmtSeconds(previewClip.duration)}
+                  </strong>
                 </div>
-                <div className="clip-preview-progress-track">
+                <div className="clip-preview-progress-mini">
+                  <span>{t.totalTime}: {fmtSeconds(previewClip.duration)}</span>
+                  <span>{t.currentTime}: {fmtSeconds(Math.max(0, previewVideoRef.current ? Math.min(previewClip.duration, previewVideoRef.current.currentTime - previewClip.start) : 0))}</span>
+                </div>
+                <div
+                  className="clip-preview-progress-track"
+                  onMouseMove={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const ratio = (event.clientX - rect.left) / rect.width;
+                    setPreviewHoverTime(getPreviewTimeAtRatio(ratio));
+                  }}
+                  onMouseLeave={() => setPreviewHoverTime(null)}
+                  onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const ratio = (event.clientX - rect.left) / rect.width;
+                    seekPreviewToRatio(ratio);
+                  }}
+                  role="slider"
+                  tabIndex={0}
+                  aria-label="Progresso do corte sugerido"
+                  onKeyDown={(event) => {
+                    if (event.key === 'ArrowLeft') {
+                      event.preventDefault();
+                      jumpPreviewBy(-5);
+                    }
+                    if (event.key === 'ArrowRight') {
+                      event.preventDefault();
+                      jumpPreviewBy(5);
+                    }
+                  }}
+                >
+                  <div className="clip-preview-progress-pin start" />
+                  <div className="clip-preview-progress-pin end" />
+                  {previewHoverTime !== null && previewClip ? (
+                    <div
+                      className="clip-preview-progress-tooltip"
+                      style={{ left: `${Math.min(100, Math.max(0, ((previewHoverTime - previewClip.start) / previewClip.duration) * 100))}%` }}
+                    >
+                      {fmtSeconds(Math.max(0, previewHoverTime - previewClip.start))}
+                    </div>
+                  ) : null}
                   <div className="clip-preview-progress-bar" style={{ width: `${previewProgress}%` }} />
                 </div>
               </div>
-              <video
-                ref={previewVideoRef}
-                className="clip-preview-video"
-                controls
-                src={toMediaUrl(currentRecording.sourcePath)}
-                preload="metadata"
-              />
+              <div className="portrait-preview-shell">
+                <div className="portrait-preview-frame">
+                  <div className="portrait-preview-badges">
+                    <span className="portrait-preview-pill">9:16</span>
+                    <span className="portrait-preview-pill secondary">{previewClip.kind === 'episodes' ? 'episódio' : 'short'}</span>
+                  </div>
+                  <div className="portrait-preview-safearea" aria-hidden="true" />
+                  <div className="portrait-preview-vignette" aria-hidden="true" />
+                  <button
+                    className={`clip-preview-play-button ${previewIsPlaying ? 'is-playing' : ''}`}
+                    type="button"
+                    onClick={() => void togglePreviewPlayback()}
+                    aria-label={previewIsPlaying ? 'Pausar preview' : 'Reproduzir preview'}
+                  >
+                    {previewIsPlaying ? '❚❚' : '▶'}
+                  </button>
+                  <video
+                    ref={previewVideoRef}
+                    className="clip-preview-video portrait-preview-video"
+                    src={toMediaUrl(currentRecording.sourcePath)}
+                    preload="metadata"
+                  />
+                  <div className="portrait-preview-overlay">
+                    <span>{fmtSeconds(previewClip.start)} - {fmtSeconds(previewClip.start + previewClip.duration)}</span>
+                    <strong>{fmtSeconds(previewClip.duration)}</strong>
+                  </div>
+                </div>
+              </div>
+              <div className="modal-preview-controls">
+                <button className="secondary small" type="button" onClick={() => jumpPreviewBy(-5)}>-5s</button>
+                <button className="primary small" type="button" onClick={() => void togglePreviewPlayback()}>
+                  {previewIsPlaying ? 'Pausar' : 'Play'}
+                </button>
+                <button className="secondary small" type="button" onClick={() => jumpPreviewBy(5)}>+5s</button>
+              </div>
               <button
                 className="primary action-primary"
                 type="button"

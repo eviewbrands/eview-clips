@@ -25,6 +25,7 @@ type ProcessingStatus = {
     | 'analyzing-transcript'
     | 'detecting-silence'
     | 'planning-cuts'
+    | 'planned'
     | 'rendering'
     | 'completed'
     | 'failed';
@@ -451,6 +452,10 @@ const processInboxFile = async (fileName: string) => {
     source: sourceInRecording,
     durationSeconds,
     strategy: 'silence+transcript',
+    outputFormats: {
+      episodes: '16:9',
+      shorts: '9:16',
+    },
     transcriptCueCount: transcriptCues.length,
     silencePointCount: silencePoints.length,
     mode: generationMode,
