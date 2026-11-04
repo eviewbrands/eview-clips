@@ -1,0 +1,139 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: eview-clips-db
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      POSTGRES_DB: ${DB_NAME:-eview_clips}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-eviewclips}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:54330:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d eview_clips"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: postgres:17-alpine
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-eviewclips}
+    volumes:
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    entrypoint: ["sh", "-c", "until pg_isready -h db -U postgres -d eview_clips; do sleep 2; done; for f in /docker-entrypoint-initdb.d/*.sql; do echo "Applying $f"; psql -h db -U postgres -d eview_clips -f "$f"; done"]
+
+  api:
+    image: node:22-bookworm-slim
+    working_dir: /workspace
+    command: sh -lc "npm install && npm run dev --workspace @eview-clips/api"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${APP_PORT:-4100}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-eview_clips}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-eviewclips}
+    ports:
+      - "127.0.0.1:4100:4100"
+    volumes:
+      - .:/workspace
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    image: node:22-bookworm-slim
+    working_dir: /workspace
+    command: sh -lc "npm install && npm run dev --workspace @eview-clips/web -- --host 0.0.0.0 --port 5180"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      VITE_API_BASE_URL: http://api:4100
+    ports:
+      - "127.0.0.1:5180:5180"
+    volumes:
+      - .:/workspace
+    depends_on:
+      - api
+
+  worker:
+    image: node:22-bookworm-slim
+    working_dir: /workspace
+    command: sh -lc "npm install && npm run dev --workspace @eview-clips/worker"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      WORKER_MODE: ${WORKER_MODE:-cpu}
+      ENCODER: ${ENCODER:-x264}
+      DATA_DIR: ${DATA_DIR:-./data}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-eview_clips}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-eviewclips}
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["cpu"]
+
+  worker-gpu:
+    build:
+      context: .
+      dockerfile: docker/worker-cuda.Dockerfile
+    working_dir: /workspace
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      WORKER_MODE: ${WORKER_MODE:-gpu}
+      ENCODER: ${ENCODER:-nvenc}
+      DATA_DIR: ${DATA_DIR:-./data}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-eview_clips}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-eviewclips}
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["gpu"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+
+  worker-mac:
+    image: node:22-bookworm-slim
+    working_dir: /workspace
+    command: sh -lc "npm install && npm run dev --workspace @eview-clips/worker"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      WORKER_MODE: ${WORKER_MODE:-mac}
+      ENCODER: ${ENCODER:-videotoolbox}
+      DATA_DIR: ${DATA_DIR:-./data}
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-eview_clips}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-eviewclips}
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["mac"]

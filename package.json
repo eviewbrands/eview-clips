@@ -1,0 +1,22 @@
+{
+  "name": "eview-clips",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node ./scripts/setup.mjs",
+    "dev": "concurrently \"npm run dev --workspace @eview-clips/api\" \"npm run dev --workspace @eview-clips/web\" \"npm run dev --workspace @eview-clips/worker\"",
+    "up": "docker compose up -d --build",
+    "down": "docker compose down",
+    "logs": "docker compose logs -f",
+    "db:psql": "docker compose exec -it db psql -U postgres -d eview_clips",
+    "db:backup": "mkdir -p backups && docker compose exec -T db pg_dump -U postgres -d eview_clips > backups/backup-$(date +%Y%m%d-%H%M%S).sql",
+    "worker": "npm run dev --workspace @eview-clips/worker"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}
