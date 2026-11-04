@@ -552,19 +552,32 @@ function App() {
     if (!currentRecording) return;
     setAiAnalyzing(true);
     setError(null);
-    setFeedback(null);
+    setFeedback('Analisando trechos com IA...');
     try {
       const response = await fetch(`/api/recordings/${encodeURIComponent(currentRecording.id)}/ai-shorts/analyze`, {
         method: 'POST',
       });
-      const body = (await response.json()) as { message?: string };
+      const rawBody = await response.text();
+      let body: { message?: string; data?: Array<unknown>; suggestions?: Array<unknown> } = {};
+      try {
+        body = rawBody ? (JSON.parse(rawBody) as typeof body) : {};
+      } catch {
+        body = {};
+      }
       if (!response.ok) {
         throw new Error(body.message || 'Falha ao analisar shorts com IA.');
       }
-      setFeedback('Sugestões de shorts por IA geradas e prontas para revisão.');
+      const suggestions = body.data ?? body.suggestions ?? [];
+      if (!Array.isArray(suggestions) || !suggestions.length) {
+        setFeedback('A IA processou o vídeo, mas não retornou sugestões válidas para este corte.');
+      } else {
+        setFeedback('Sugestões de shorts por IA geradas e prontas para revisão.');
+      }
       await loadStudioData();
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : 'Falha ao analisar shorts por IA.');
+      const message = analysisError instanceof Error ? analysisError.message : 'Falha ao analisar shorts por IA.';
+      setError(message);
+      setFeedback(null);
     } finally {
       setAiAnalyzing(false);
     }
@@ -783,9 +796,15 @@ function App() {
                   <div className="card-header-actions">
                     <h3>{t.aiShorts}</h3>
                     <button className="secondary small" type="button" onClick={() => void analyzeAiShorts()} disabled={aiAnalyzing}>
-                      {aiAnalyzing ? '...' : t.aiAnalyze}
+                      {aiAnalyzing ? 'Analisando...' : t.aiAnalyze}
                     </button>
                   </div>
+                  {aiAnalyzing ? (
+                    <p className="feedback ok" aria-live="polite">Analisando trechos com IA para identificar os melhores cortes...</p>
+                  ) : null}
+                  {error ? (
+                    <p className="feedback error" aria-live="assertive">{error}</p>
+                  ) : null}
                   {currentRecording.aiShorts.length ? (
                     <ul className="clip-list">
                       {currentRecording.aiShorts.map((suggestion) => (

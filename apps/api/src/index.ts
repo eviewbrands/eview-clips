@@ -281,7 +281,8 @@ const callGeminiForSuggestions = async (clips: Array<{ id?: string; start: numbe
     },
   };
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+  const modelName = process.env.AI_SHORTS_MODEL || 'gemini-3.8-flash';
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
