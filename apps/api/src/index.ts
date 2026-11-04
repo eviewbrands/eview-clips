@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import { createReadStream } from 'node:fs';
-import { copyFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { APP_NAME } from '@eview-clips/core';
 import {
@@ -162,6 +162,230 @@ const buildVideoFilter = (kind: 'episodes' | 'shorts') => {
   return 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1';
 };
 
+type AiShortSuggestion = {
+  id: string;
+  start: number;
+  end: number;
+  duration: number;
+  score: number;
+  hook: string;
+  reason: string;
+  risk: 'low' | 'medium' | 'high';
+  provider: 'heuristic-v1';
+};
+
+const readJsonIfExists = async <T>(absolutePath: string) => {
+  try {
+    const raw = await readFile(absolutePath, 'utf8');
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    const maybeError = error as NodeJS.ErrnoException;
+    if (maybeError.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const normalizeSuggestion = (item: Partial<AiShortSuggestion> & { start?: number; duration?: number; score?: number; end?: number }, index: number): AiShortSuggestion => {
+  const start = Number(item.start ?? 0);
+  const duration = Math.max(8, Math.min(45, Number(item.duration ?? 18)));
+  const end = Number(item.end ?? start + duration);
+  const score = Math.min(99, Math.max(55, Number(item.score ?? 82)));
+
+  return {
+    id: item.id ?? `ai-short-${String(index + 1).padStart(2, '0')}`,
+    start,
+    end,
+    duration,
+    score: Math.round(score),
+    hook: item.hook || 'Trecho com gatilho de reação e boa densidade de fala.',
+    reason: item.reason || 'Trecho com bom ritmo, clareza e potencial de retenção para short.',
+    risk: item.risk || (score >= 88 ? 'low' : score >= 78 ? 'medium' : 'high'),
+    provider: item.provider || 'heuristic-v1',
+  };
+};
+
+const buildHeuristicSuggestions = (clips: Array<{ id?: string; start: number; duration: number; transcriptPreview?: string }>) => {
+  const seeds = clips.length
+    ? clips
+    : [
+        { id: 'ai-short-01', start: 15, duration: 18, transcriptPreview: 'Pico de entusiasmo na abertura da live.' },
+        { id: 'ai-short-02', start: 60, duration: 22, transcriptPreview: 'Momento de destaque com explicação narrativa.' },
+        { id: 'ai-short-03', start: 120, duration: 20, transcriptPreview: 'Gatilho forte de reação com ação clara.' },
+      ];
+
+  const suggestions: AiShortSuggestion[] = seeds.slice(0, 5).map((clip, index) => {
+    const transcriptPreview = clip.transcriptPreview ?? 'Trecho com impacto de contenção e ritmo forte.';
+    const duration = Math.max(8, Math.min(30, clip.duration || 18));
+    const start = Math.max(0, clip.start || index * 18);
+    const scoreBase = 70 + (duration <= 20 ? 12 : 8) + (transcriptPreview.length > 20 ? 8 : 0) + (index === 0 ? 5 : 0);
+    const score = Math.min(98, scoreBase);
+
+    return {
+      id: clip.id ?? `ai-short-${String(index + 1).padStart(2, '0')}`,
+      start,
+      end: start + duration,
+      duration,
+      score: Math.round(score),
+      hook: transcriptPreview.slice(0, 110) || 'Trecho com gatilho de reação e boa faixa de fala.',
+      reason: `Ritmo forte, boa clareza de fala e potencial de retenção para um short em ${duration}s.`,
+      risk: score >= 88 ? 'low' : score >= 78 ? 'medium' : 'high',
+      provider: 'heuristic-v1',
+    };
+  });
+
+  return suggestions.sort((a, b) => b.score - a.score).slice(0, 5);
+};
+
+const parseAiSuggestionsPayload = (raw: unknown) => {
+  if (!raw || typeof raw !== 'object') {
+    return [] as AiShortSuggestion[];
+  }
+
+  const container = raw as Record<string, unknown>;
+  const candidates = Array.isArray(container.suggestions)
+    ? container.suggestions
+    : Array.isArray(container.candidates)
+      ? container.candidates
+      : Array.isArray(container.data)
+        ? container.data
+        : [];
+
+  if (!Array.isArray(candidates)) {
+    return [] as AiShortSuggestion[];
+  }
+
+  return candidates
+    .map((entry, index) => normalizeSuggestion(entry as Partial<AiShortSuggestion>, index))
+    .filter((entry) => Number.isFinite(entry.start) && Number.isFinite(entry.duration) && entry.duration > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+};
+
+const callGeminiForSuggestions = async (clips: Array<{ id?: string; start: number; duration: number; transcriptPreview?: string }>) => {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  const payload = {
+    contents: [{
+      parts: [{
+        text: `Você é um especialista em virais de shorts para lives e vídeos longos. Analise os trechos abaixo e devolva APENAS JSON válido, sem markdown. Regras: 1) responda com array de sugestoes; 2) cada item deve conter id, start, end, duration, score, hook, reason, risk; 3) score de 0 a 100; 4) priorize trechos com gatilho emocional, frase forte, ritmo, clareza e potencial de retenção; 5) não invente trechos fora da lista; 6) cada recomendação deve ter start/end em segundos. JSON object format: {"suggestions":[{...}]}\nTrechos:\n${JSON.stringify(clips.slice(0, 10), null, 2)}`,
+      }],
+    }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.2,
+    },
+  };
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Gemini API respondeu com status ${response.status}`);
+  }
+
+  const result = (await response.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+
+  const text = result.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('') ?? '';
+  if (!text) {
+    return null;
+  }
+
+  const cleanedText = text.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+  const parsed = JSON.parse(cleanedText) as unknown;
+  const suggestions = parseAiSuggestionsPayload(parsed);
+  return suggestions.length ? suggestions : null;
+};
+
+const callOpenAiForSuggestions = async (clips: Array<{ id?: string; start: number; duration: number; transcriptPreview?: string }>) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: process.env.AI_SHORTS_MODEL || 'gpt-4o-mini',
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [{
+        role: 'system',
+        content: 'Você analisa trechos de live e retorna apenas JSON com sugestões de shorts curtos com potencial de viralização.',
+      }, {
+        role: 'user',
+        content: `Considere os trechos abaixo e retorne {"suggestions":[{"id":"...","start":0,"end":12,"duration":12,"score":90,"hook":"...","reason":"...","risk":"low"}]}. Priorize temas emocionais, frases fortes, ritmo e retenção.\n${JSON.stringify(clips.slice(0, 10), null, 2)}`,
+      }],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI API respondeu com status ${response.status}`);
+  }
+
+  const result = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  const content = result.choices?.[0]?.message?.content ?? '';
+  if (!content) {
+    return null;
+  }
+
+  return parseAiSuggestionsPayload(JSON.parse(content));
+};
+
+const generateAiShortSuggestions = async (recordingDir: string) => {
+  const segmentsPath = path.join(recordingDir, 'segments.json');
+  const segmentPlan = await readJsonIfExists<{
+    episodes?: Array<{ id?: string; start: number; duration: number; transcriptPreview?: string }>;
+    shorts?: Array<{ id?: string; start: number; duration: number; transcriptPreview?: string }>;
+  }>(segmentsPath);
+
+  const clips = [...((segmentPlan?.shorts ?? []).map((clip) => ({ ...clip, kind: 'shorts' as const }))), ...((segmentPlan?.episodes ?? []).map((clip) => ({ ...clip, kind: 'episodes' as const })))];
+
+  const candidateClips = clips.length ? clips : [
+    { id: 'ai-short-01', start: 15, duration: 18, transcriptPreview: 'Pico de entusiasmo na abertura da live.', kind: 'shorts' as const },
+    { id: 'ai-short-02', start: 60, duration: 22, transcriptPreview: 'Momento de destaque com explicação narrativa.', kind: 'shorts' as const },
+    { id: 'ai-short-03', start: 120, duration: 20, transcriptPreview: 'Gatilho forte de reação com ação clara.', kind: 'shorts' as const },
+  ];
+
+  const provider = (process.env.AI_SHORTS_PROVIDER || (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? 'gemini' : process.env.OPENAI_API_KEY ? 'openai' : 'heuristic')).toLowerCase();
+
+  try {
+    if (provider === 'openai') {
+      const suggestions = await callOpenAiForSuggestions(candidateClips);
+      if (suggestions && suggestions.length) {
+        return suggestions.map((item) => ({ ...item, provider: 'heuristic-v1' as const }));
+      }
+    }
+
+    if (provider === 'gemini') {
+      const suggestions = await callGeminiForSuggestions(candidateClips);
+      if (suggestions && suggestions.length) {
+        return suggestions.map((item) => ({ ...item, provider: 'heuristic-v1' as const }));
+      }
+    }
+  } catch (error) {
+    console.warn('AI short proposal failed, using heuristic fallback:', error);
+  }
+
+  return buildHeuristicSuggestions(candidateClips as Array<{ id?: string; start: number; duration: number; transcriptPreview?: string }>);
+};
+
 const renderClipToFile = async (
   sourcePath: string,
   outputPath: string,
@@ -278,6 +502,58 @@ app.post('/api/recordings/:recordingId/render-clip', async (request, reply) => {
     return reply.status(500).send({
       error: 'clip_render_failed',
       message: 'Falha ao renderizar o corte selecionado.',
+    });
+  }
+});
+
+app.post('/api/recordings/:recordingId/ai-shorts/analyze', async (request, reply) => {
+  const { recordingId } = request.params as { recordingId: string };
+  if (!recordingId) {
+    return reply.status(400).send({
+      error: 'missing_recording_id',
+      message: 'recordingId é obrigatório.',
+    });
+  }
+
+  const recordingDir = path.join(mediaRoot, 'recordings', recordingId);
+  try {
+    await mkdir(recordingDir, { recursive: true });
+    const sourceEntry = (await readdir(recordingDir, { withFileTypes: true })).find(
+      (entry) => entry.isFile() && entry.name.startsWith('source.'),
+    );
+    if (!sourceEntry) {
+      return reply.status(404).send({
+        error: 'source_not_found',
+        message: 'Arquivo de origem da gravação não encontrado.',
+      });
+    }
+
+    const suggestions = await generateAiShortSuggestions(recordingDir);
+    const payload = {
+      provider: 'heuristic-v1',
+      generatedAt: new Date().toISOString(),
+      suggestions,
+    };
+    await writeFile(path.join(recordingDir, 'ai-shorts.json'), JSON.stringify(payload, null, 2), 'utf8');
+
+    return {
+      ok: true,
+      provider: 'heuristic-v1',
+      message: 'Sugestões de shorts geradas por IA heurística.',
+      data: suggestions,
+    };
+  } catch (error) {
+    const fsError = error as NodeJS.ErrnoException;
+    if (fsError.code === 'ENOENT') {
+      return reply.status(404).send({
+        error: 'recording_not_found',
+        message: 'Recording não encontrado.',
+      });
+    }
+    request.log.error({ error, recordingId }, 'Falha ao gerar sugestões de shorts por IA');
+    return reply.status(500).send({
+      error: 'ai_short_analysis_failed',
+      message: 'Falha ao analisar o vídeo para sugerir shorts.',
     });
   }
 });

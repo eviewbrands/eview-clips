@@ -30,6 +30,17 @@ type ImportJob = {
 };
 
 type PlannedClip = { id: string; start: number; duration: number; transcriptPreview: string };
+type AiShortSuggestion = {
+  id: string;
+  start: number;
+  end: number;
+  duration: number;
+  score: number;
+  hook: string;
+  reason: string;
+  risk: 'low' | 'medium' | 'high';
+  provider: 'heuristic-v1';
+};
 type RenderedClip = { name: string; path: string; sizeBytes: number };
 type Recording = {
   id: string;
@@ -39,6 +50,7 @@ type Recording = {
   processing?: { phase: string; renderedCuts: number; totalCuts: number; message: string };
   plannedEpisodes: PlannedClip[];
   plannedShorts: PlannedClip[];
+  aiShorts: AiShortSuggestion[];
   episodes: RenderedClip[];
   shorts: RenderedClip[];
 };
@@ -91,6 +103,11 @@ const translations = {
     renderClip: 'Renderizar corte',
     close: 'Fechar',
     suggestedCut: 'Corte sugerido',
+    aiShorts: 'Shorts por IA',
+    aiViralScore: 'Potencial viral',
+    aiReason: 'Motivo da sugestão',
+    aiAnalyze: 'Analisar shorts por IA',
+    aiNoSuggestions: 'Ainda não há sugestões de short por IA para este vídeo.',
     currentTime: 'Tempo atual',
     totalTime: 'Tempo total',
     renderThisCut: 'Renderizar este corte',
@@ -142,6 +159,11 @@ const translations = {
     renderClip: 'Render clip',
     close: 'Close',
     suggestedCut: 'Suggested cut',
+    aiShorts: 'AI shorts',
+    aiViralScore: 'Viral score',
+    aiReason: 'Why this suggestion',
+    aiAnalyze: 'Analyze shorts with AI',
+    aiNoSuggestions: 'No AI short suggestions are available for this video yet.',
     currentTime: 'Current time',
     totalTime: 'Total time',
     renderThisCut: 'Render this cut',
@@ -247,6 +269,7 @@ function App() {
   const [previewProgress, setPreviewProgress] = useState(0);
   const [previewHoverTime, setPreviewHoverTime] = useState<number | null>(null);
   const [previewIsPlaying, setPreviewIsPlaying] = useState(false);
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const t = translations[language];
 
@@ -525,6 +548,28 @@ function App() {
     }
   };
 
+  const analyzeAiShorts = async () => {
+    if (!currentRecording) return;
+    setAiAnalyzing(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const response = await fetch(`/api/recordings/${encodeURIComponent(currentRecording.id)}/ai-shorts/analyze`, {
+        method: 'POST',
+      });
+      const body = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        throw new Error(body.message || 'Falha ao analisar shorts com IA.');
+      }
+      setFeedback('Sugestões de shorts por IA geradas e prontas para revisão.');
+      await loadStudioData();
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : 'Falha ao analisar shorts por IA.');
+    } finally {
+      setAiAnalyzing(false);
+    }
+  };
+
   const openLiveInline = (videoId: string) => {
     setInlineVideoId((current) => current === videoId ? null : videoId);
     if (inlineVideoId !== videoId) {
@@ -734,6 +779,44 @@ function App() {
               <p>{t.noPlan}</p>
             ) : (
               <div className="recording-grid">
+                <article className="recording-card surface-indigo">
+                  <div className="card-header-actions">
+                    <h3>{t.aiShorts}</h3>
+                    <button className="secondary small" type="button" onClick={() => void analyzeAiShorts()} disabled={aiAnalyzing}>
+                      {aiAnalyzing ? '...' : t.aiAnalyze}
+                    </button>
+                  </div>
+                  {currentRecording.aiShorts.length ? (
+                    <ul className="clip-list">
+                      {currentRecording.aiShorts.map((suggestion) => (
+                        <li key={suggestion.id}>
+                          <div className="planned-clip-row">
+                            <div className="planned-clip-main">
+                              <div className="clip-headline">
+                                <span className="select-toggle"><span>{suggestion.id}</span></span>
+                                <span className="clip-badge success">{suggestion.score}/100</span>
+                              </div>
+                              <div className="split-times">{fmtSeconds(suggestion.start)} → {fmtSeconds(suggestion.end)}</div>
+                              <div className="clip-duration">{t.aiViralScore}: {suggestion.score}</div>
+                              <p className="live-meta">{suggestion.hook}</p>
+                              <p className="live-meta"><strong>{t.aiReason}:</strong> {suggestion.reason}</p>
+                            </div>
+                            <div className="planned-clip-actions">
+                              <button className="secondary small" type="button" onClick={() => openClipPreview('shorts', { id: suggestion.id, start: suggestion.start, duration: suggestion.duration })}>
+                                {t.preview.toUpperCase()}
+                              </button>
+                              <button className="render-clip small" type="button" onClick={() => void renderManualClip(currentRecording.id, 'shorts', { id: suggestion.id, start: suggestion.start, duration: suggestion.duration })}>
+                                {t.renderClip.toUpperCase()}
+                              </button>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="live-meta">{t.aiNoSuggestions}</p>
+                  )}
+                </article>
                 <article className="recording-card surface-blue">
                   <div className="card-header-actions">
                     <h3>{t.episodesPlanned} ({currentRecording.plannedEpisodes.length})</h3>

@@ -7,6 +7,18 @@ export interface RenderedClip {
   sizeBytes: number;
 }
 
+export interface AiShortSuggestion {
+  id: string;
+  start: number;
+  end: number;
+  duration: number;
+  score: number;
+  hook: string;
+  reason: string;
+  risk: 'low' | 'medium' | 'high';
+  provider: 'heuristic-v1';
+}
+
 export interface RecordingStudioItem {
   id: string;
   sourcePath: string;
@@ -22,6 +34,7 @@ export interface RecordingStudioItem {
   };
   plannedEpisodes: Array<{ id: string; start: number; duration: number; transcriptPreview: string }>;
   plannedShorts: Array<{ id: string; start: number; duration: number; transcriptPreview: string }>;
+  aiShorts: AiShortSuggestion[];
   episodes: RenderedClip[];
   shorts: RenderedClip[];
 }
@@ -130,6 +143,7 @@ export const listRecordingSummaries = async (): Promise<RecordingStudioItem[]> =
     const sourceStats = await stat(sourceAbsolutePath);
     const segmentsPath = path.join(recordingDir, 'segments.json');
     const statusPath = path.join(recordingDir, 'status.json');
+    const aiShortsPath = path.join(recordingDir, 'ai-shorts.json');
 
     let hasSegments = false;
     try {
@@ -161,6 +175,9 @@ export const listRecordingSummaries = async (): Promise<RecordingStudioItem[]> =
       message: string;
       updatedAt: string;
     }>(statusPath);
+    const aiShortSuggestions = await readJsonIfExists<{
+      suggestions?: AiShortSuggestion[];
+    }>(aiShortsPath);
 
     summaries.push({
       id: entry.name,
@@ -181,6 +198,7 @@ export const listRecordingSummaries = async (): Promise<RecordingStudioItem[]> =
         duration: item.duration,
         transcriptPreview: item.transcriptPreview ?? '',
       })),
+      aiShorts: aiShortSuggestions?.suggestions ?? [],
       episodes,
       shorts,
     });

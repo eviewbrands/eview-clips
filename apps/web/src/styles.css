@@ -423,6 +423,11 @@ h3 {
   border-color: rgba(168, 85, 247, 0.18);
 }
 
+.surface-indigo {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(22, 32, 72, 0.72));
+  border-color: rgba(99, 102, 241, 0.18);
+}
+
 .recording-card:hover {
   transform: translateY(-2px);
   border-color: rgba(96, 165, 250, 0.2);
@@ -568,6 +573,12 @@ h3 {
   color: #bae6fd;
   border-color: rgba(96, 165, 250, 0.26);
   background: rgba(96, 165, 250, 0.08);
+}
+
+.clip-badge.success {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.24);
+  background: rgba(34, 197, 94, 0.08);
 }
 
 .clip-badge.rendered {
