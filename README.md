@@ -49,6 +49,18 @@ O script `npm run setup` gera o `.env` a partir do `.env.example`, detectando a 
 Após autorizar, o callback redireciona automaticamente para a home do painel (`WEB_APP_URL`) com o status de conexão.
 Quando conectado, o token fica salvo localmente em `data/oauth/youtube-token.json`.
 
+### Troubleshooting rápido (login Google)
+
+Se a conta parar em **"Verificando sua identidade..."** no Google, isso normalmente é desafio de segurança da própria conta (passkey/2FA), não erro da API.
+
+1. Clique em **"Tentar de outro jeito"** e conclua com senha + código (ou outro método disponível da conta).
+2. Faça o fluxo em navegador normal (Chrome/Safari), evitando navegador embutido.
+3. Confirme que o callback OAuth está exatamente cadastrado:
+   - `http://127.0.0.1:4100/api/auth/youtube/callback`
+4. Se o painel não conectar, confira:
+   - `http://127.0.0.1:4100/api/auth/youtube/status`
+   - `docker compose logs api --since 10m`
+
 ## Dados
 
 Todos os arquivos persistem em `./data` para sobreviver a reinicialização dos containers.
