@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { APP_NAME } from '@eview-clips/core';
+import { youtubeDl } from 'youtube-dl-exec';
 import {
   buildYoutubeAuthUrl,
   exchangeCodeAndPersistTokens,
@@ -30,6 +31,103 @@ const resolveDataDir = () => {
 
 const mediaRoot = path.join(resolveDataDir(), 'media');
 const inboxRoot = path.join(mediaRoot, 'inbox');
+const youtubeRoot = path.join(resolveDataDir(), 'youtube');
+const youtubeCookiesFile = path.join(youtubeRoot, 'cookies.txt');
+const youtubeCookiesMetaFile = path.join(youtubeRoot, 'cookies.meta.json');
+
+type YoutubeCookiesMeta = {
+  source: 'clipboard' | 'browser-auto';
+  updatedAt: string;
+  browser?: string;
+};
+
+const getYoutubeCookiesStatus = async () => {
+  try {
+    const fileStats = await stat(youtubeCookiesFile);
+    const meta = await readJsonIfExists<YoutubeCookiesMeta>(youtubeCookiesMetaFile);
+    return {
+      configured: true,
+      path: youtubeCookiesFile,
+      sizeBytes: fileStats.size,
+      updatedAt: fileStats.mtime.toISOString(),
+      source: meta?.source ?? null,
+      browser: meta?.browser ?? null,
+    };
+  } catch (error) {
+    const maybeError = error as NodeJS.ErrnoException;
+    if (maybeError.code === 'ENOENT') {
+      return {
+        configured: false,
+        path: youtubeCookiesFile,
+        sizeBytes: 0,
+        updatedAt: null,
+        source: null,
+        browser: null,
+      };
+    }
+    throw error;
+  }
+};
+
+const isLikelyNetscapeCookieFile = (raw: string) => {
+  const content = raw.trim();
+  if (!content) {
+    return false;
+  }
+  const lines = content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+  if (!lines.length) {
+    return false;
+  }
+  const hasYoutubeDomain = lines.some((line) => line.toLowerCase().includes('youtube.com'));
+  const hasCookieShape = lines.some((line) => line.split('\t').length >= 7);
+  return hasYoutubeDomain && hasCookieShape;
+};
+
+const saveYoutubeCookiesText = async (
+  rawCookies: string,
+  metadata: { source: 'clipboard' | 'browser-auto'; browser?: string },
+) => {
+  const normalized = rawCookies.replace(/\r\n/g, '\n').trim();
+  if (!isLikelyNetscapeCookieFile(normalized)) {
+    throw new Error('Cookies inválidos. Cole um arquivo Netscape contendo sessão do youtube.com.');
+  }
+  await mkdir(youtubeRoot, { recursive: true });
+  await writeFile(youtubeCookiesFile, `${normalized}\n`, 'utf8');
+  const meta: YoutubeCookiesMeta = {
+    source: metadata.source,
+    browser: metadata.browser,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeFile(youtubeCookiesMetaFile, JSON.stringify(meta, null, 2), 'utf8');
+};
+
+const runAutoCookiesSync = async () => {
+  const browsers = ['safari', 'chrome', 'chromium', 'firefox', 'edge'];
+  const errors: string[] = [];
+  await mkdir(youtubeRoot, { recursive: true });
+  for (const browser of browsers) {
+    try {
+      await youtubeDl('https://www.youtube.com/watch?v=BaW_jenozKc', {
+        cookiesFromBrowser: browser,
+        cookies: youtubeCookiesFile,
+        simulate: true,
+        skipDownload: true,
+        noWarnings: true,
+      });
+      const output = await readFile(youtubeCookiesFile, 'utf8');
+      await saveYoutubeCookiesText(output, { source: 'browser-auto', browser });
+      return { browser };
+    } catch (error) {
+      errors.push(`${browser}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(
+    `Não foi possível gerar cookies automaticamente dentro do Docker. Tentativas: ${errors.join(' | ')}`,
+  );
+};
 
 const detectMimeType = (filePath: string) => {
   const ext = path.extname(filePath).toLowerCase();
@@ -153,6 +251,77 @@ app.post('/api/youtube/lives/:videoId/import', async (request, reply) => {
 app.get('/api/youtube/import-jobs', async () => ({
   data: Array.from(importJobs.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
 }));
+
+app.get('/api/youtube/cookies/status', async (request, reply) => {
+  try {
+    return await getYoutubeCookiesStatus();
+  } catch (error) {
+    request.log.error({ error }, 'Falha ao consultar status dos cookies do YouTube');
+    return reply.status(500).send({
+      error: 'youtube_cookies_status_failed',
+      message: 'Falha ao consultar status dos cookies do YouTube.',
+    });
+  }
+});
+
+app.post('/api/youtube/cookies/refresh', async (request, reply) => {
+  const body = (request.body ?? {}) as { action?: 'auto' | 'clipboard'; cookiesText?: string };
+  const action = body.action ?? 'auto';
+  try {
+    if (action === 'clipboard') {
+      if (typeof body.cookiesText !== 'string' || !body.cookiesText.trim()) {
+        return reply.status(400).send({
+          error: 'cookies_text_required',
+          message: 'Nenhum cookie foi recebido da área de transferência.',
+        });
+      }
+      await saveYoutubeCookiesText(body.cookiesText, { source: 'clipboard' });
+      const status = await getYoutubeCookiesStatus();
+      return {
+        ok: true,
+        message: 'Cookies atualizados a partir da área de transferência.',
+        data: status,
+      };
+    }
+
+    const result = await runAutoCookiesSync();
+    const status = await getYoutubeCookiesStatus();
+    return {
+      ok: true,
+      message: `Cookies atualizados automaticamente usando ${result.browser}.`,
+      data: status,
+    };
+  } catch (error) {
+    request.log.error({ error }, 'Falha ao atualizar cookies do YouTube');
+    return reply.status(422).send({
+      error: 'youtube_cookies_refresh_failed',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível atualizar cookies do YouTube automaticamente.',
+    });
+  }
+});
+
+app.get('/api/youtube/cookies/raw', async (request, reply) => {
+  try {
+    const cookies = await readFile(youtubeCookiesFile, 'utf8');
+    return { cookies };
+  } catch (error) {
+    const maybeError = error as NodeJS.ErrnoException;
+    if (maybeError.code === 'ENOENT') {
+      return reply.status(404).send({
+        error: 'youtube_cookies_not_found',
+        message: 'Ainda não há cookies salvos para copiar.',
+      });
+    }
+    request.log.error({ error }, 'Falha ao ler cookies do YouTube');
+    return reply.status(500).send({
+      error: 'youtube_cookies_read_failed',
+      message: 'Falha ao ler cookies salvos do YouTube.',
+    });
+  }
+});
 
 const buildVideoFilter = (kind: 'episodes' | 'shorts') => {
   if (kind === 'episodes') {

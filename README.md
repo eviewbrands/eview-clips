@@ -61,6 +61,27 @@ Se a conta parar em **"Verificando sua identidade..."** no Google, isso normalme
    - `http://127.0.0.1:4100/api/auth/youtube/status`
    - `docker compose logs api --since 10m`
 
+### Troubleshooting de download de live (macOS + Safari)
+
+Quando o YouTube exige sessão autenticada, o download pode falhar sem cookies do navegador.
+
+Sem configurar `.env`, faça tudo pelo terminal do host:
+
+Helper universal no host (mais automático, sem colar manual):
+
+```bash
+npm run cookies:sync
+```
+
+> Execute esse comando no **HOST** (terminal da máquina, fora do Docker), na pasta `eview-clips`.
+
+Esse comando:
+1. instala `yt-dlp` automaticamente quando necessário (Linux/macOS);
+2. tenta navegadores disponíveis no host (Safari/Chrome/Chromium/Firefox/Edge/Brave, conforme o sistema);
+3. se extração direta falhar, tenta ler cookies do clipboard do host;
+4. envia os cookies direto para `http://127.0.0.1:4100/api/youtube/cookies/refresh`;
+5. imprime o status final (`configured=true/false`).
+
 ## Dados
 
 Todos os arquivos persistem em `./data` para sobreviver a reinicialização dos containers.

@@ -57,6 +57,9 @@ services:
       YOUTUBE_REDIRECT_URI: ${YOUTUBE_REDIRECT_URI:-http://127.0.0.1:4100/api/auth/youtube/callback}
       YOUTUBE_TOKEN_PATH: ${YOUTUBE_TOKEN_PATH:-./data/oauth/youtube-token.json}
       WEB_APP_URL: ${WEB_APP_URL:-http://127.0.0.1:5180}
+      YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+      YTDLP_COOKIES_FROM_BROWSER: ${YTDLP_COOKIES_FROM_BROWSER:-}
+      YTDLP_JS_RUNTIMES: ${YTDLP_JS_RUNTIMES:-}
     ports:
       - "127.0.0.1:4100:4100"
     volumes:

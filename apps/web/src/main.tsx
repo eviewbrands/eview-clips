@@ -29,6 +29,15 @@ type ImportJob = {
   updatedAt: string;
 };
 
+type YoutubeCookiesStatus = {
+  configured: boolean;
+  path: string;
+  sizeBytes: number;
+  updatedAt: string | null;
+  source: 'clipboard' | 'browser-auto' | null;
+  browser: string | null;
+};
+
 type PlannedClip = { id: string; start: number; duration: number; transcriptPreview: string };
 type AiShortSuggestion = {
   id: string;
@@ -64,6 +73,22 @@ const fmtSeconds = (seconds: number) => {
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 };
 
+const fmtDateTime = (value: string | null, language: Language) => {
+  if (!value) return language === 'en' ? 'not available' : 'não disponível';
+  const locale = language === 'en' ? 'en-US' : 'pt-BR';
+  return new Date(value).toLocaleString(locale);
+};
+
+const formatCookiesSource = (status: YoutubeCookiesStatus | null, language: Language) => {
+  if (!status?.source) return language === 'en' ? 'none' : 'nenhuma';
+  if (status.source === 'clipboard') return language === 'en' ? 'clipboard' : 'área de transferência';
+  if (status.source === 'browser-auto') {
+    const browserName = status.browser ?? (language === 'en' ? 'browser' : 'navegador');
+    return `${language === 'en' ? 'browser auto' : 'navegador automático'} (${browserName})`;
+  }
+  return status.source;
+};
+
 const getRouteVideoId = () => {
   const match = window.location.pathname.match(/^\/cut\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -86,6 +111,11 @@ const translations = {
     closePlayer: 'Fechar player',
     importButton: 'Baixar live + planejar episódios e shorts',
     importing: 'Baixando live...',
+    cookiesTitle: 'Cookies do YouTube',
+    cookiesConfigured: 'Cookies configurados',
+    cookiesMissing: 'Cookies ausentes',
+    cookiesUpdatedAt: 'Atualizado em',
+    cookiesSource: 'Origem',
     regenerateShorts: 'Regenerar plano de shorts',
     regenerateEpisodes: 'Regenerar plano de episódios',
     process: 'Processo',
@@ -142,6 +172,11 @@ const translations = {
     closePlayer: 'Close player',
     importButton: 'Download live + plan episodes and shorts',
     importing: 'Downloading live...',
+    cookiesTitle: 'YouTube cookies',
+    cookiesConfigured: 'Cookies configured',
+    cookiesMissing: 'Cookies missing',
+    cookiesUpdatedAt: 'Updated at',
+    cookiesSource: 'Source',
     regenerateShorts: 'Regenerate shorts plan',
     regenerateEpisodes: 'Regenerate episodes plan',
     process: 'Process',
@@ -260,6 +295,7 @@ function App() {
   const [lives, setLives] = useState<YoutubeLive[]>([]);
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const [cookiesStatus, setCookiesStatus] = useState<YoutubeCookiesStatus | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedEpisodes, setSelectedEpisodes] = useState<string[]>([]);
@@ -290,10 +326,19 @@ function App() {
     setLoading(true);
     setError(null);
     try {
-      const statusRes = await fetch('/api/auth/youtube/status');
+      const [statusRes, cookiesRes] = await Promise.all([
+        fetch('/api/auth/youtube/status'),
+        fetch('/api/youtube/cookies/status'),
+      ]);
       if (!statusRes.ok) throw new Error('Falha ao consultar status do YouTube.');
       const statusData = (await statusRes.json()) as YoutubeStatus;
       setYoutubeStatus(statusData);
+      if (cookiesRes.ok) {
+        const cookiesData = (await cookiesRes.json()) as YoutubeCookiesStatus;
+        setCookiesStatus(cookiesData);
+      } else {
+        setCookiesStatus(null);
+      }
 
       if (statusData.connected) {
         const [livesRes, importsRes] = await Promise.all([
@@ -734,6 +779,18 @@ function App() {
                       ? t.importing
                       : t.importButton}
                   </button>
+                </div>
+                <div className={`cookies-panel ${cookiesStatus?.configured ? 'ready' : 'missing'}`}>
+                  <div className="cookies-panel-head">
+                    <strong>{t.cookiesTitle}</strong>
+                    <span className={`cookies-status ${cookiesStatus?.configured ? 'ok' : 'warn'}`}>
+                      {cookiesStatus?.configured ? t.cookiesConfigured : t.cookiesMissing}
+                    </span>
+                  </div>
+                  <small>
+                    {t.cookiesUpdatedAt}: {fmtDateTime(cookiesStatus?.updatedAt ?? null, language)} · {t.cookiesSource}:{' '}
+                    {formatCookiesSource(cookiesStatus, language)}
+                  </small>
                 </div>
                 <div className="action-grid">
                   <button className="secondary action-secondary" type="button" onClick={() => openLiveSource(currentLive.videoUrl)}>
